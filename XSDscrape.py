@@ -2,7 +2,7 @@
 # XSD → Excel automatizace
 # ---------------------------------------------------------------------
 # Tento skript načte XML Schema (soubor .xsd) a vytvoří přehled
-# všech „leaf“ elementů.
+# všech „leaf" elementů.
 #
 # Pro každý element se na prvním listu Excelu uloží:
 #  - jeho hierarchie (úrovně, cesta, ISO status)
@@ -19,28 +19,82 @@ import os
 import xml.etree.ElementTree as ET
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
+import sys
+import traceback
+
+
+def pause_and_exit(code=0):
+    """Počká na Enter, aby si uživatel stihl přečíst výpis, a ukončí skript."""
+    input("\nStiskni Enter pro zavření okna...")
+    sys.exit(code)
+
+
+def handle_exception(exc_type, exc_value, exc_tb):
+    """Při jakékoliv neošetřené chybě vypíše detail a nechá okno otevřené."""
+    traceback.print_exception(exc_type, exc_value, exc_tb)
+    print("\n❌ Při zpracování došlo k chybě (viz výše).")
+    input("\nStiskni Enter pro zavření okna...")
+
+
+sys.excepthook = handle_exception
 
 
 # ===============================================================
 # Načtení XSD souboru
+# ---------------------------------------------------------------
+# Způsoby výběru souboru:
+# 1) Přetažení .xsd souboru na ikonu skriptu / .exe
+#    (soubor se předá jako argument příkazové řádky)
+# 2) Přetažení souboru do okna terminálu (vloží se cesta)
+# 3) Pokud nic nezadáno, otevře se dialogové okno pro výběr souboru
 # ===============================================================
 
-while True:
-    xsd_filename = input("Zadej název XSD souboru: ").strip()
+import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox
 
-    # Automaticky doplní .xsd, pokud uživatel zapomene
-    if not xsd_filename.lower().endswith(".xsd"):
-        xsd_filename += ".xsd"
 
-    xsd_path = os.path.abspath(xsd_filename)
+def get_xsd_path():
+    """Vrátí cestu k XSD souboru (argument, dialog nebo drag & drop)."""
 
-    if os.path.exists(xsd_path):
-        break
+    # --- 1) Soubor přetažený na ikonu skriptu / předaný jako argument ---
+    if len(sys.argv) > 1:
+        candidate = sys.argv[1].strip().strip('"')
+        if os.path.isfile(candidate) and candidate.lower().endswith(".xsd"):
+            return os.path.abspath(candidate)
+        print(f"⚠️ Argument '{candidate}' není platný .xsd soubor, otevírám dialog.")
 
-    print(f"❌ Soubor '{xsd_filename}' nebyl nalezen. Zkus to znovu.")
+    # --- 2) Dialogové okno pro výběr souboru ---
+    root_tk = tk.Tk()
+    root_tk.withdraw()                      # skryje prázdné hlavní okno
+    root_tk.attributes("-topmost", True)    # dialog se zobrazí navrch
 
-# Výstupní Excel má stejný název jako XSD
-output_excel = os.path.splitext(xsd_filename)[0] + ".xlsx"
+    while True:
+        selected = filedialog.askopenfilename(
+            title="Vyber XSD soubor",
+            filetypes=[("XSD soubory", "*.xsd"), ("Všechny soubory", "*.*")],
+        )
+
+        # Uživatel dialog zavřel / dal Storno
+        if not selected:
+            root_tk.destroy()
+            print("❌ Nebyl vybrán žádný soubor.")
+            pause_and_exit(1)
+
+        if selected.lower().endswith(".xsd"):
+            root_tk.destroy()
+            return os.path.abspath(selected)
+
+        messagebox.showwarning("Neplatný soubor", "Vyber prosím soubor s příponou .xsd.")
+
+
+xsd_path = get_xsd_path()
+xsd_filename = os.path.basename(xsd_path)
+
+# Výstupní Excel se uloží vedle XSD souboru, se stejným názvem
+output_excel = os.path.splitext(xsd_path)[0] + ".xlsx"
+
+print(f"📂 Načítám: {xsd_path}")
 
 # Načtení XML stromu
 tree = ET.parse(xsd_path)
@@ -201,9 +255,14 @@ if not root_element:
 def estimate_length_from_pattern(pattern: str) -> int | None:
     """
     Vypočítá maximální délku hodnoty z XSD regex patternu.
+    Vrátí None pokud pattern neobsahuje žádné explicitní kvantifikátory {n,n}.
     """
 
     if not pattern:
+        return None
+
+    # Kontrola, zda pattern obsahuje alespoň jeden explicitní kvantifikátor {n} nebo {n,n}
+    if not re.search(r'\{\d+(?:,\d+)?\}', pattern):
         return None
 
     total = 0
@@ -219,7 +278,6 @@ def estimate_length_from_pattern(pattern: str) -> int | None:
         inner_len = estimate_length_from_pattern(inner) or 0
         repeat = int(max_q or min_q)
         total += inner_len * repeat
-        # Odstraníme z patternu zpracovanou skupinu
         p = p[:match.start()] + p[match.end():]
 
     # Znakové třídy [ ... ] {m,n}
@@ -228,15 +286,12 @@ def estimate_length_from_pattern(pattern: str) -> int | None:
         match = charclass_regex.search(p)
         if not match:
             break
-        # délka = kvantifikátor * 1 znak
         min_q, max_q = match.group(2), match.group(3)
         repeat = int(max_q or min_q or 1)
         total += repeat
-        # Odstraníme z patternu zpracovanou třídu
         p = p[:match.start()] + p[match.end():]
 
     # Zbývající pevné znaky (včetně escaped)
-    # \+ = 1 znak, 4 = 1 znak, - = 1 znak
     char_with_quant = re.compile(r'(\\?.)(?:\{(\d+)(?:,(\d+))?\})?')
     for match in char_with_quant.finditer(p):
         char, min_q, max_q = match.groups()
@@ -244,6 +299,7 @@ def estimate_length_from_pattern(pattern: str) -> int | None:
         total += repeat
 
     return total if total > 0 else None
+
  
 # ===============================================================
 # Detekce typu znaků v regex patternu
@@ -260,7 +316,6 @@ def pattern_char_types(pattern: str):
     if not pattern:
         return None
 
-    # Odstranění konstrukce, které NESMÍ ovlivňovat typ
     cleaned = pattern
 
     # odstraníme znakové třídy a skupiny
@@ -270,7 +325,7 @@ def pattern_char_types(pattern: str):
     # odstraníme kvantifikátory {m,n}
     cleaned = re.sub(r'\{\d+(?:,\d+)?\}', '', cleaned)
 
-    # Detekce typů – ALE z PŮVODNÍHO patternu
+    # Detekce typů – z PŮVODNÍHO patternu
     has_digit = bool(re.search(r'\d', pattern))
     has_alpha = bool(re.search(r'[A-Za-z]', pattern))
 
@@ -294,10 +349,11 @@ def pattern_char_types(pattern: str):
 # Priorita:
 # 1) boolean
 # 2) enumeration
-# 3) pattern
-# 4) decimal
-# 5) maxLength
-# 6) heuristika z názvu typu
+# 3) pattern s explicitními kvantifikátory → délka z patternu
+# 4) pattern bez kvantifikátorů → délka z maxLength (OPRAVA)
+# 5) decimal
+# 6) maxLength
+# 7) heuristika z názvu typu
 # ===============================================================
 
 def derive_format(type_name: str, restrictions: dict):
@@ -311,33 +367,40 @@ def derive_format(type_name: str, restrictions: dict):
     frac_dig = restrictions.get("fractionDigits")
     base_type = restrictions.get("base")
 
-# Boolean
+    # Boolean
     if base_type:
         base = base_type.lower()
         if base in ("xs:boolean", "boolean"):
             return "boolean"
-# Enumerace
+
+    # Enumerace
     if enum:
         return f"X({max(len(str(v)) for v in enum)})"
 
-# Pattern
+    # Pattern
     if pattern:
         est = estimate_length_from_pattern(pattern)
         ctype = pattern_char_types(pattern)
         if est:
+            # Pattern obsahuje explicitní kvantifikátory → délka z patternu
             return f"XN({est})" if ctype == "digits" else f"X({est})"
-        return ""
+        else:
+            # Pattern bez explicitních kvantifikátorů → délka z maxLength
+            if max_len:
+                return f"XN({max_len})" if ctype == "digits" else f"X({max_len})"
+            # Žádná délka k dispozici → vrátíme alespoň typ bez délky
+            return "XN" if ctype == "digits" else "X"
 
-# Decimal - dynamicky z restrikcí
+    # Decimal - dynamicky z restrikcí
     if total_dig:
         frac = frac_dig or "0"
         return f"N({total_dig},{frac})"
 
-# Textové délky
+    # Textové délky
     if max_len:
         return f"X({max_len})"
 
-# Odvození z názvu
+    # Odvození z názvu
     special = {
         "ISODateTime": "ISODateTime",
         "ISOYearMonth": "ISOYearMonth",
@@ -349,8 +412,6 @@ def derive_format(type_name: str, restrictions: dict):
     }
 
     if type_name:
-        t = type_name.lower()
-
         for k in sorted(special, key=len, reverse=True):
             if k in type_name:
                 return special[k]
@@ -406,7 +467,7 @@ def traverse(element_name, element_type, minOccurs="1", maxOccurs="1",
     else:
         iso_status = "M"
 
-# Leaf element
+    # Leaf element
     if not children:
         if element_type in complex_any_types:
             fmt = "<ANY>"
@@ -527,4 +588,7 @@ for i in range(len(rows)):
 # ===============================================================
 
 wb.save(output_excel)
-print(f"✅ Hotovo! Vytvořen soubor '{output_excel}'.")
+print(f"✅ Hotovo! Vytvořen soubor '{os.path.basename(output_excel)}'.")
+print(f"📁 Uloženo do: {os.path.abspath(output_excel)}")
+
+pause_and_exit(0)
