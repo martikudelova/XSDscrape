@@ -43,7 +43,7 @@ Skript projde celé XSD, najde všechny **leaf elementy** a ke každému určí:
 8. Spusť skript:  
    python XSDscrape.py
 
-9. Vyber `.xsd` souboru, který chceš zpracovat.
+9. Vyber `.xsd` soubor, který chceš zpracovat.
 
 10. Výstupní `.xlsx` soubor najdeš ve stejném lokálním adresáři.
 
